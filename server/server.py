@@ -79,9 +79,10 @@ class SileroVAD:
             self._h = np.zeros((2, 1, 64), dtype=np.float32)
             self._c = np.zeros((2, 1, 64), dtype=np.float32)
 
-    def is_speech(self, audio_chunk: np.ndarray, gain: float = 1.0) -> bool:
+    def speech_prob(self, audio_chunk: np.ndarray, gain: float = 1.0) -> float:
+        """Ritorna la probabilità di speech (0.0-1.0)."""
         if len(audio_chunk) != 512:
-            return False
+            return 0.0
         audio = audio_chunk.astype(np.float32) * gain / 32768.0
         audio = np.clip(audio, -1.0, 1.0)
         audio = audio.reshape(1, -1)
@@ -100,7 +101,7 @@ class SileroVAD:
                 "sr": self._sr,
             }
             out, self._h, self._c = self.session.run(None, ort_inputs)
-        return float(out[0][0]) > self.threshold
+        return float(out[0][0])
 
 
 # --- Opus Decoder ---
@@ -237,6 +238,27 @@ async def measure_single(
         logger.info(f"  Drained {drained} stale audio chunks from queue")
 
     vad.reset()
+
+    # Fase 1: misura background RMS (1s prima di triggerare TTS)
+    bg_samples = []
+    pcm_buffer = np.array([], dtype=np.int16)
+    bg_deadline = time.time() + 1.0
+    while time.time() < bg_deadline:
+        try:
+            pcm_chunk = await asyncio.wait_for(audio_queue.get(), timeout=0.5)
+            pcm_buffer = np.concatenate([pcm_buffer, pcm_chunk])
+            while len(pcm_buffer) >= 512:
+                chunk = pcm_buffer[:512]
+                pcm_buffer = pcm_buffer[512:]
+                bg_samples.append(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+        except asyncio.TimeoutError:
+            break
+
+    bg_rms = np.mean(bg_samples) if bg_samples else 100.0
+    # Soglia RMS: 5x il background (minimo 500 per sicurezza)
+    RMS_SPEECH_THRESHOLD = max(bg_rms * 5.0, 500.0)
+    logger.info(f"  Background RMS={bg_rms:.1f}, speech threshold={RMS_SPEECH_THRESHOLD:.1f}")
+
     t_notify = await trigger_alexa_tts(phrase, entity_id)
 
     speech_started = False
@@ -245,10 +267,9 @@ async def measure_single(
     silence_count = 0
     chunks_processed = 0
     speech_chunks = 0
-    SILENCE_THRESHOLD = 25  # ~500ms @ ~20ms/chunk
+    SILENCE_THRESHOLD = 25  # ~800ms @ 32ms/chunk
     deadline = time.time() + timeout
-
-    # Accumulator: Opus frames are 320 samples, VAD wants 512
+    max_rms_seen = 0.0
     pcm_buffer = np.array([], dtype=np.int16)
 
     while time.time() < deadline:
@@ -268,37 +289,42 @@ async def measure_single(
             pcm_buffer = pcm_buffer[512:]
             chunks_processed += 1
 
-            is_speech = vad.is_speech(vad_chunk, gain=AUDIO_GAIN)
-
             rms = np.sqrt(np.mean(vad_chunk.astype(np.float32) ** 2))
+            max_rms_seen = max(max_rms_seen, rms)
+
+            # RMS-based speech detection (più affidabile per audio catturato via aria)
+            is_loud = rms > RMS_SPEECH_THRESHOLD
+
+            # Log VAD probability per diagnostica
+            vad_prob = vad.speech_prob(vad_chunk, gain=AUDIO_GAIN)
 
             if chunks_processed == 1:
-                logger.info(f"  First audio chunk: RMS={rms:.1f}, speech={is_speech}")
+                logger.info(f"  First chunk: RMS={rms:.1f}, vad_prob={vad_prob:.3f}, loud={is_loud}")
             elif chunks_processed % 50 == 0:
-                logger.info(f"  Chunk #{chunks_processed}: RMS={rms:.1f}, speech={is_speech}, started={speech_started}")
+                logger.info(f"  Chunk #{chunks_processed}: RMS={rms:.1f}, vad={vad_prob:.3f}, loud={is_loud}, started={speech_started}")
 
-            if is_speech:
+            if is_loud:
                 speech_chunks += 1
 
-            if is_speech and not speech_started:
+            if is_loud and not speech_started:
                 speech_started = True
                 t_speech_start = time.time()
                 silence_count = 0
-                logger.info(f"  VAD: speech START (after {chunks_processed} chunks)")
-            elif is_speech and speech_started:
+                logger.info(f"  SPEECH START (chunk #{chunks_processed}, RMS={rms:.1f}, vad={vad_prob:.3f})")
+            elif is_loud and speech_started:
                 silence_count = 0
-            elif not is_speech and speech_started:
+            elif not is_loud and speech_started:
                 silence_count += 1
                 if silence_count >= SILENCE_THRESHOLD:
                     t_speech_end = time.time() - (SILENCE_THRESHOLD * 0.032)
-                    logger.info(f"  VAD: speech END (total {chunks_processed} chunks, {speech_chunks} speech)")
+                    logger.info(f"  SPEECH END (total {chunks_processed} chunks, {speech_chunks} loud, max_rms={max_rms_seen:.1f})")
                     break
 
         if t_speech_end:
             break
 
     if not speech_started or not t_speech_end:
-        logger.warning(f"  VAD failed: chunks={chunks_processed}, speech_started={speech_started}, speech_chunks={speech_chunks}")
+        logger.warning(f"  Detection failed: chunks={chunks_processed}, started={speech_started}, speech_chunks={speech_chunks}, max_rms={max_rms_seen:.1f}")
         return None
 
     speech_duration = t_speech_end - t_speech_start
