@@ -37,7 +37,7 @@ resource "proxmox_virtual_environment_container" "tts_calibration" {
   tags         = ["jarvis", "calibration", "temp"]
 
   operating_system {
-    template_file_id = "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+    template_file_id = "local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst"
     type             = "debian"
   }
 
