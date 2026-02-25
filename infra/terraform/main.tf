@@ -57,7 +57,6 @@ resource "proxmox_virtual_environment_container" "tts_calibration" {
 
   features {
     nesting = true
-    keyctl  = true
   }
 
   initialization {
