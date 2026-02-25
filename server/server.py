@@ -145,7 +145,8 @@ async def trigger_alexa_tts(phrase: str, entity_id: str) -> float:
 
 
 # --- Stato globale ---
-audio_queue: asyncio.Queue | None = None
+# audio_queue persiste tra riconnessioni WS — measure_single legge da qui
+audio_queue: asyncio.Queue = asyncio.Queue()
 device_connected = asyncio.Event()
 calibration_running = asyncio.Event()
 
@@ -155,7 +156,12 @@ async def ws_audio(ws: WebSocket):
     """Endpoint WS compatibile con protocollo AtomS3R."""
     global audio_queue
     await ws.accept()
-    audio_queue = asyncio.Queue()
+    # Non ricreare la queue — svuotala e riusa
+    while not audio_queue.empty():
+        try:
+            audio_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
     opus_decoder = OpusDecoder()
     device_id = "unknown"
 
@@ -177,11 +183,13 @@ async def ws_audio(ws: WebSocket):
                     elif msg_type == "audio_start":
                         await ws.send_json({"type": "ready", "session_id": "calib"})
                         logger.info("Audio session started")
+                    elif msg_type == "state":
+                        logger.info(f"Device state: {msg.get('state')}")
                     elif msg_type == "pong":
                         pass
                 elif "bytes" in data:
                     pcm = opus_decoder.decode(data["bytes"])
-                    if pcm is not None and audio_queue:
+                    if pcm is not None:
                         await audio_queue.put(pcm)
 
     except WebSocketDisconnect:
@@ -190,7 +198,6 @@ async def ws_audio(ws: WebSocket):
         logger.error(f"WS error: {e}")
     finally:
         device_connected.clear()
-        audio_queue = None
 
 
 async def measure_single(
@@ -199,14 +206,19 @@ async def measure_single(
     """Misura singola: trigger TTS, VAD rileva start/end speech."""
     global audio_queue
     if not audio_queue:
+        logger.warning("measure_single: audio_queue is None!")
         return None
 
     # Svuota coda
+    drained = 0
     while not audio_queue.empty():
         try:
             audio_queue.get_nowait()
+            drained += 1
         except asyncio.QueueEmpty:
             break
+    if drained:
+        logger.info(f"  Drained {drained} stale audio chunks from queue")
 
     vad.reset()
     t_notify = await trigger_alexa_tts(phrase, entity_id)
@@ -215,38 +227,62 @@ async def measure_single(
     t_speech_start = None
     t_speech_end = None
     silence_count = 0
+    chunks_processed = 0
+    speech_chunks = 0
     SILENCE_THRESHOLD = 25  # ~500ms @ ~20ms/chunk
     deadline = time.time() + timeout
+
+    # Accumulator: Opus frames are 320 samples, VAD wants 512
+    pcm_buffer = np.array([], dtype=np.int16)
 
     while time.time() < deadline:
         try:
             pcm_chunk = await asyncio.wait_for(audio_queue.get(), timeout=1.0)
         except asyncio.TimeoutError:
+            if chunks_processed == 0:
+                logger.warning("  No audio received (queue timeout)")
             continue
 
-        # Pad/trim a 512 samples per Silero VAD
-        if len(pcm_chunk) < 512:
-            padded = np.zeros(512, dtype=np.int16)
-            padded[:len(pcm_chunk)] = pcm_chunk
-            pcm_chunk = padded
-        elif len(pcm_chunk) > 512:
-            pcm_chunk = pcm_chunk[:512]
+        # Accumula campioni
+        pcm_buffer = np.concatenate([pcm_buffer, pcm_chunk])
 
-        is_speech = vad.is_speech(pcm_chunk)
+        # Processa tutti i blocchi da 512 disponibili
+        while len(pcm_buffer) >= 512:
+            vad_chunk = pcm_buffer[:512]
+            pcm_buffer = pcm_buffer[512:]
+            chunks_processed += 1
 
-        if is_speech and not speech_started:
-            speech_started = True
-            t_speech_start = time.time()
-            silence_count = 0
-        elif is_speech and speech_started:
-            silence_count = 0
-        elif not is_speech and speech_started:
-            silence_count += 1
-            if silence_count >= SILENCE_THRESHOLD:
-                t_speech_end = time.time() - (SILENCE_THRESHOLD * 0.032)
-                break
+            is_speech = vad.is_speech(vad_chunk)
+
+            if chunks_processed == 1:
+                rms = np.sqrt(np.mean(vad_chunk.astype(np.float32) ** 2))
+                logger.info(f"  First audio chunk: RMS={rms:.1f}, speech={is_speech}")
+            elif chunks_processed % 100 == 0:
+                rms = np.sqrt(np.mean(vad_chunk.astype(np.float32) ** 2))
+                logger.debug(f"  Chunk #{chunks_processed}: RMS={rms:.1f}, speech={is_speech}, speech_started={speech_started}")
+
+            if is_speech:
+                speech_chunks += 1
+
+            if is_speech and not speech_started:
+                speech_started = True
+                t_speech_start = time.time()
+                silence_count = 0
+                logger.info(f"  VAD: speech START (after {chunks_processed} chunks)")
+            elif is_speech and speech_started:
+                silence_count = 0
+            elif not is_speech and speech_started:
+                silence_count += 1
+                if silence_count >= SILENCE_THRESHOLD:
+                    t_speech_end = time.time() - (SILENCE_THRESHOLD * 0.032)
+                    logger.info(f"  VAD: speech END (total {chunks_processed} chunks, {speech_chunks} speech)")
+                    break
+
+        if t_speech_end:
+            break
 
     if not speech_started or not t_speech_end:
+        logger.warning(f"  VAD failed: chunks={chunks_processed}, speech_started={speech_started}, speech_chunks={speech_chunks}")
         return None
 
     speech_duration = t_speech_end - t_speech_start
