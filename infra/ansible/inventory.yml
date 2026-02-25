@@ -1,0 +1,6 @@
+all:
+  hosts:
+    tts-calibration:
+      ansible_host: "{{ lookup('env', 'CALIBRATION_HOST') | default('tts-calibration.local', true) }}"
+      ansible_user: root
+      ansible_python_interpreter: /usr/bin/python3

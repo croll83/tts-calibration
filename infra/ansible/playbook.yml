@@ -1,0 +1,113 @@
+---
+- name: Provision TTS Calibration LXC
+  hosts: tts-calibration
+  become: true
+
+  vars:
+    tailscale_auth_key: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}"
+    ha_token: "{{ lookup('env', 'HA_TOKEN') }}"
+    alexa_target: "{{ lookup('env', 'ALEXA_NOTIFY_TARGET') | default('media_player.echo_studio', true) }}"
+    project_dir: /opt/tts-calibration
+
+  tasks:
+    - name: Aggiorna pacchetti
+      apt:
+        update_cache: true
+        upgrade: dist
+
+    - name: Installa dipendenze base
+      apt:
+        name:
+          - curl
+          - git
+          - ca-certificates
+          - gnupg
+          - python3
+        state: present
+
+    # --- Docker ---
+    - name: Aggiungi chiave GPG Docker
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Aggiungi repo Docker
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Installa Docker
+      apt:
+        update_cache: true
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Abilita Docker
+      systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    # --- Tailscale ---
+    - name: Installa Tailscale
+      shell: curl -fsSL https://tailscale.com/install.sh | sh
+      args:
+        creates: /usr/bin/tailscale
+      when: tailscale_auth_key | length > 0
+
+    - name: Avvia Tailscale
+      shell: tailscale up --authkey={{ tailscale_auth_key }} --accept-routes
+      when: tailscale_auth_key | length > 0
+      ignore_errors: true
+
+    # --- Deploy progetto ---
+    - name: Crea directory progetto
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+
+    - name: Copia file progetto
+      synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ project_dir }}/"
+        delete: true
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=results"
+          - "--exclude=infra"
+
+    - name: Crea file .env
+      copy:
+        dest: "{{ project_dir }}/.env"
+        content: |
+          HA_URL=http://192.168.1.18:8123
+          HA_TOKEN={{ ha_token }}
+          ALEXA_NOTIFY_TARGET={{ alexa_target }}
+          ALEXA_NOTIFY_SERVICE=notify.alexa_media
+        mode: "0600"
+
+    - name: Crea directory risultati
+      file:
+        path: "{{ project_dir }}/results"
+        state: directory
+
+    - name: Build e start container
+      shell: docker compose up -d --build
+      args:
+        chdir: "{{ project_dir }}"
+
+    - name: Verifica container running
+      shell: docker ps --filter name=tts-calibration --format '{{ "{{" }}.Status{{ "}}" }}'
+      register: container_status
+
+    - name: Mostra stato
+      debug:
+        msg: "Container status: {{ container_status.stdout }}"

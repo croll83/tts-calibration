@@ -1,0 +1,14 @@
+services:
+  calibration-server:
+    build: ./server
+    container_name: tts-calibration
+    ports:
+      - "8200:8200"
+    environment:
+      - HA_URL=${HA_URL:-http://192.168.1.18:8123}
+      - HA_TOKEN=${HA_TOKEN}
+      - ALEXA_ENTITY_ID=${ALEXA_ENTITY_ID:-media_player.echo_studio}
+    volumes:
+      - ./results:/data/results
+    restart: unless-stopped
+    network_mode: host  # necessario per raggiungere HA sulla LAN
