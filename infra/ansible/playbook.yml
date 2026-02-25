@@ -22,6 +22,7 @@
           - ca-certificates
           - gnupg
           - python3
+          - rsync
         state: present
 
     # --- Docker ---
