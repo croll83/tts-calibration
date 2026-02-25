@@ -8,22 +8,24 @@ terraform {
 }
 
 provider "proxmox" {
-  pm_api_url      = var.proxmox_api_url
-  pm_user         = var.proxmox_user
-  pm_password     = var.proxmox_password
-  pm_tls_insecure = true
+  pm_api_url          = var.proxmox_api_url
+  pm_api_token_id     = var.proxmox_api_token_id
+  pm_api_token_secret = var.proxmox_api_token_secret
+  pm_tls_insecure     = true
 }
 
 variable "proxmox_api_url" {
   default = "https://192.168.1.49:8006/api2/json"
 }
 
-variable "proxmox_user" {
-  default = "root@pam"
+variable "proxmox_api_token_id" {
+  description = "API token ID (es. root@pam!terraform)"
+  default     = "root@pam!terraform"
 }
 
-variable "proxmox_password" {
-  sensitive = true
+variable "proxmox_api_token_secret" {
+  description = "API token secret"
+  sensitive   = true
 }
 
 variable "proxmox_node" {
@@ -59,7 +61,7 @@ resource "proxmox_lxc" "tts_calibration" {
     keyctl  = true
   }
 
-  start       = true
+  start        = true
   unprivileged = true
 
   ssh_public_keys = var.ssh_public_key
