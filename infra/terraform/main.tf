@@ -12,6 +12,9 @@ provider "proxmox" {
   pm_api_token_id     = var.proxmox_api_token_id
   pm_api_token_secret = var.proxmox_api_token_secret
   pm_tls_insecure     = true
+  pm_debug            = true
+  pm_log_enable       = true
+  pm_log_file         = "terraform-plugin-proxmox.log"
 }
 
 variable "proxmox_api_url" {
@@ -29,7 +32,7 @@ variable "proxmox_api_token_secret" {
 }
 
 variable "proxmox_node" {
-  default = "proxmox"
+  default = "pve-wagmi"
 }
 
 variable "ssh_public_key" {

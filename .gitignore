@@ -41,16 +41,16 @@ __pycache__/
 .claude
 
 # Terraform
-infrastructure/terraform/.terraform/
-infrastructure/terraform/*.tfstate
-infrastructure/terraform/*.tfstate.backup
-infrastructure/terraform/*.tfvars
-!infrastructure/terraform/*.tfvars.example
-infrastructure/terraform/.terraform.lock.hcl
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/*.tfvars
+!infra/terraform/*.tfvars.example
+infra/terraform/.terraform.lock.hcl
 
 # Ansible (secrets)
-infrastructure/ansible/inventory/hosts.yml
-infrastructure/ansible/group_vars/all.yml
+infra/ansible/inventory/hosts.yml
+infra/ansible/group_vars/all.yml
 
 # OpenClaw config (contiene API keys, bot tokens, gateway secrets)
 openclaw.json
