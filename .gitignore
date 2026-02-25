@@ -47,6 +47,7 @@ infra/terraform/*.tfstate.backup
 infra/terraform/*.tfvars
 !infra/terraform/*.tfvars.example
 infra/terraform/.terraform.lock.hcl
+infra/terraform/terraform-plugin-proxmox.log
 
 # Ansible (secrets)
 infra/ansible/inventory/hosts.yml
@@ -60,3 +61,6 @@ openclaw.json
 
 # Runtime data (database, vector store, ecc.)
 data/
+
+# Calibration results
+results/

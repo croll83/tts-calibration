@@ -1,0 +1,63 @@
+menu "JARVIS Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "YOUR_WIFI_SSID"
+        help
+            SSID della rete WiFi
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "YOUR_WIFI_PASSWORD"
+        help
+            Password della rete WiFi
+
+    config JARVIS_SERVER_HOST
+        string "JARVIS Management Server Host"
+        default "jarvis.local"
+        help
+            Hostname o IP del wakeword-server (LAN).
+            Le chiamate HTTP di management (device_config, heartbeat,
+            device_status, room_temperature, speaker/suppress) vengono
+            inviate qui. Il wakeword-server le inoltra all'orchestrator
+            via Tailscale.
+
+    config JARVIS_SERVER_PORT
+        int "JARVIS Management Server Port"
+        default 8200
+        help
+            Porta del wakeword-server per le chiamate HTTP di management.
+            Default: 8200 (porta standard del wakeword-server).
+
+    config JARVIS_API_TOKEN
+        string "JARVIS API Bearer Token"
+        default ""
+        help
+            Token statico per autenticazione Bearer.
+            Deve corrispondere al token configurato nell'orchestrator.
+            Se vuoto, nessun header Authorization viene inviato.
+
+    config JARVIS_WS_URL
+        string "JARVIS WebSocket URL override"
+        default ""
+        help
+            Full WebSocket URL override for the audio endpoint.
+            When set, the device connects to this URL instead of building
+            it from SERVER_HOST:PORT/ws/audio.
+            Use for wakeword-server proxy: "ws://192.168.1.XX:8200/ws/audio"
+            Leave empty to use the default (SERVER_HOST:PORT).
+
+    config USE_LOCAL_WAKEWORD
+        bool "Use local microWakeWord (on-device)"
+        default n
+        help
+            Enable on-device wake word detection using microWakeWord (TFLite).
+            When disabled (default), the device streams audio 24/7 to a
+            wakeword-server which handles wake word detection server-side.
+            Enable this for standalone operation without a wakeword-server.
+
+    # NOTA: DEVICE_ROOM e DEVICE_ID sono stati rimossi.
+    # Il device_id è ora il MAC address (letto a runtime).
+    # La configurazione viene recuperata dinamicamente dal server.
+
+endmenu

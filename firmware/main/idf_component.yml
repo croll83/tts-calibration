@@ -1,0 +1,13 @@
+## IDF Component Manager Manifest File
+## https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/tools/idf-component-manager.html
+
+dependencies:
+  # cJSON per parsing JSON
+  espressif/cjson:
+    version: "^1.7.15"
+
+  # WebSocket client per audio streaming
+  espressif/esp_websocket_client:
+    version: "^1.2.0"
+
+  # GC9107: usa esp_lcd_panel_st7789 con init commands custom (compatibile IDF 6.1)
