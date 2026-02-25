@@ -35,7 +35,8 @@ SAMPLE_RATE = 16000
 REPETITIONS = 3                # ripetizioni per frase
 PAUSE_BETWEEN_PHRASES = 8.0   # secondi tra misurazioni
 OUTLIER_THRESHOLD = 0.30       # scarta se devia >30% dalla mediana
-VAD_THRESHOLD = 0.6            # soglia VAD (alta = piu' selettiva)
+VAD_THRESHOLD = 0.3            # soglia VAD (abbassata per audio catturato via aria)
+AUDIO_GAIN = 3.0               # amplificazione audio (il mic cattura da speaker esterno)
 
 
 # --- Silero VAD ---
@@ -78,10 +79,11 @@ class SileroVAD:
             self._h = np.zeros((2, 1, 64), dtype=np.float32)
             self._c = np.zeros((2, 1, 64), dtype=np.float32)
 
-    def is_speech(self, audio_chunk: np.ndarray) -> bool:
+    def is_speech(self, audio_chunk: np.ndarray, gain: float = 1.0) -> bool:
         if len(audio_chunk) != 512:
             return False
-        audio = audio_chunk.astype(np.float32) / 32768.0
+        audio = audio_chunk.astype(np.float32) * gain / 32768.0
+        audio = np.clip(audio, -1.0, 1.0)
         audio = audio.reshape(1, -1)
         if self._v5:
             ort_inputs = {
@@ -151,6 +153,16 @@ device_connected = asyncio.Event()
 calibration_running = asyncio.Event()
 
 
+async def _ws_ping_task(ws: WebSocket, interval: float = 15.0):
+    """Manda ping periodici al device per mantenere la connessione WS viva."""
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            await ws.send_json({"type": "ping"})
+    except Exception:
+        pass  # WS chiuso, task termina silenziosamente
+
+
 @app.websocket("/ws/audio")
 async def ws_audio(ws: WebSocket):
     """Endpoint WS compatibile con protocollo AtomS3R."""
@@ -167,6 +179,9 @@ async def ws_audio(ws: WebSocket):
 
     logger.info("AtomS3R connesso")
     device_connected.set()
+
+    # Keepalive: ping ogni 15s per evitare timeout del client ESP-IDF
+    ping_task = asyncio.create_task(_ws_ping_task(ws))
 
     try:
         await ws.send_json({"type": "welcome"})
@@ -197,6 +212,7 @@ async def ws_audio(ws: WebSocket):
     except Exception as e:
         logger.error(f"WS error: {e}")
     finally:
+        ping_task.cancel()
         device_connected.clear()
 
 
@@ -252,14 +268,14 @@ async def measure_single(
             pcm_buffer = pcm_buffer[512:]
             chunks_processed += 1
 
-            is_speech = vad.is_speech(vad_chunk)
+            is_speech = vad.is_speech(vad_chunk, gain=AUDIO_GAIN)
+
+            rms = np.sqrt(np.mean(vad_chunk.astype(np.float32) ** 2))
 
             if chunks_processed == 1:
-                rms = np.sqrt(np.mean(vad_chunk.astype(np.float32) ** 2))
                 logger.info(f"  First audio chunk: RMS={rms:.1f}, speech={is_speech}")
-            elif chunks_processed % 100 == 0:
-                rms = np.sqrt(np.mean(vad_chunk.astype(np.float32) ** 2))
-                logger.debug(f"  Chunk #{chunks_processed}: RMS={rms:.1f}, speech={is_speech}, speech_started={speech_started}")
+            elif chunks_processed % 50 == 0:
+                logger.info(f"  Chunk #{chunks_processed}: RMS={rms:.1f}, speech={is_speech}, started={speech_started}")
 
             if is_speech:
                 speech_chunks += 1
