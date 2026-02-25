@@ -52,9 +52,17 @@ class SileroVAD:
             providers=["CPUExecutionProvider"],
         )
         self.threshold = threshold
-        self._h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._c = np.zeros((2, 1, 64), dtype=np.float32)
         self._sr = np.array([SAMPLE_RATE], dtype=np.int64)
+        # Detect model version by checking input names
+        input_names = [inp.name for inp in self.session.get_inputs()]
+        self._v5 = "state" in input_names  # v5 uses single 'state' tensor
+        if self._v5:
+            self._state = np.zeros((2, 1, 128), dtype=np.float32)
+            logger.info("Silero VAD v5 detected (state input)")
+        else:
+            self._h = np.zeros((2, 1, 64), dtype=np.float32)
+            self._c = np.zeros((2, 1, 64), dtype=np.float32)
+            logger.info("Silero VAD v4 detected (h/c inputs)")
 
     def _download_model(self, path: Path):
         import urllib.request
@@ -64,21 +72,32 @@ class SileroVAD:
         logger.info("Download complete.")
 
     def reset(self):
-        self._h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._c = np.zeros((2, 1, 64), dtype=np.float32)
+        if self._v5:
+            self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        else:
+            self._h = np.zeros((2, 1, 64), dtype=np.float32)
+            self._c = np.zeros((2, 1, 64), dtype=np.float32)
 
     def is_speech(self, audio_chunk: np.ndarray) -> bool:
         if len(audio_chunk) != 512:
             return False
         audio = audio_chunk.astype(np.float32) / 32768.0
         audio = audio.reshape(1, -1)
-        ort_inputs = {
-            "input": audio,
-            "h": self._h,
-            "c": self._c,
-            "sr": self._sr,
-        }
-        out, self._h, self._c = self.session.run(None, ort_inputs)
+        if self._v5:
+            ort_inputs = {
+                "input": audio,
+                "state": self._state,
+                "sr": self._sr,
+            }
+            out, self._state = self.session.run(None, ort_inputs)
+        else:
+            ort_inputs = {
+                "input": audio,
+                "h": self._h,
+                "c": self._c,
+                "sr": self._sr,
+            }
+            out, self._h, self._c = self.session.run(None, ort_inputs)
         return float(out[0][0]) > self.threshold
 
 
